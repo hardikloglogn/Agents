@@ -6,7 +6,7 @@ Responsibilities:
     All system prompts (Supervisor + 7 specialist agents + direct answering fallback)
     EduState TypedDict
     build_graph()   compiles the LangGraph with all specialist agents + fallback
-    serialise_messages()   LangChain msg objects â†’ JSON-safe dicts
+    serialise_messages()   LangChain msg objects → JSON-safe dicts
     build_trace()   routing trace for the Streamlit UI trace panel
 
 Imported by supervisor_server.py (FastMCP port 9001).
@@ -122,7 +122,7 @@ scholarship awards, scholarship eligibility checks, fee reminders.
 - Send payment receipt email for every payment recorded.
 - Check scholarship eligibility before awarding   GPA and credit requirements matter.
 - Send fee reminders for all unpaid/overdue fees when requested.
-- Present financial data in â‚¹ (Indian Rupees) format."""
+- Present financial data in  (Indian Rupees) format."""
 
 TIMETABLE_PROMPT = """You are the Timetable & Scheduling Specialist for EduManage AI.
 Handle: creating timetable slots, room assignment, faculty timetables,
@@ -131,7 +131,7 @@ student timetables, conflict detection, slot updates, schedule notifications.
 - Show timetable in day-by-day format (Monday through Saturday).
 - Notify all enrolled students by email when a schedule changes.
 - For room conflicts, clearly name both conflicting courses.
-- Show time in HH:MMâ€“HH:MM format."""
+- Show time in HH:MM–HH:MM format."""
 
 DIRECT_ANSWERING_PROMPT = """You are the Direct Answering Specialist for EduManage AI   the DEFAULT FALLBACK.
 
