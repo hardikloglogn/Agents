@@ -120,7 +120,6 @@ UI available at `http://localhost:8501`.
 ## ✅ Phase‑1 Manual Test Matrix (Inputs → Tools → Expected Output)
 
 All tests below use the Supervisor endpoint:
-Use recon/port scanning only on targets you own or are explicitly authorized to assess.
 
 ```bash
 curl -s http://localhost:9000/chat \
@@ -132,16 +131,13 @@ curl -s http://localhost:9000/chat \
 
 | Flow / Intent | Sample `message` | MCP tools used | Expected output shape |
 |---|---|---|---|
-| Domain assessment (`domain_assessment`) | `Any vulnerability for loglogn.com` | `tool_dns_lookup`, `tool_port_scan`, `tool_http_security_headers`, `tool_ssl_info` | `Domain Assessment: <domain>` + Findings list (ports/headers/tls) |
-| DNS / Public IP (`domain_assessment`) | `What is the public IP for loglogn.com` | `tool_dns_lookup` | `Public IP(s): <ip1, ip2>` |
-| Recon only (`recon_only`) | `Which ports are open for loglogn.com` | `tool_port_scan` | `Open ports: <...>` (common-port scan only) |
-| Recon only (`recon_only`) | `whois loglogn.com` | `tool_whois_lookup` | `WHOIS: registrar=..., expiration=...` |
+| Domain assessment (`domain_assessment`) | `Any vulnerability for loglogn.com` | `tool_dns_lookup`, `tool_whois_lookup`, `tool_port_scan`, `tool_http_security_headers`, `tool_ssl_info` | `Domain Assessment: <domain>` + Findings list (ports/headers/tls) |
+| Recon only (`recon_only`) | `Scan ports on loglogn.com` | `tool_port_scan` (and possibly `tool_dns_lookup` depending on query) | Summary mentioning open ports (limited common-port scan) |
 | Threat only (`threat_only`) | `Is CVE-2021-44228 actively exploited?` | `tool_get_epss`, `tool_check_cisa_kev`, `tool_check_exploit_available` | `Threat Status: <LOW|MEDIUM|HIGH>` + EPSS/KEV/exploit fields |
 | Risk assessment (`risk_assessment`) | `Analyze risk for CVE-2021-44228 on loglogn.com` | `tool_get_cvss`, `tool_get_epss`, `tool_check_cisa_kev`, `tool_check_exploit_available`, `tool_port_scan`, `tool_calculate_risk` | `Risk: <SEVERITY> (<score>)` + CVE/domain + reasons + `Action:` |
 | Session analysis (`session_analysis`) | `Which vulnerability should we fix first?` | (Redis only; no MCP tools) | `Highest Risk Issue` + CVE/domain + risk score |
-| Report generation (`report_generation`) | `Generate report` | `tool_generate_session_report` | `Report saved: <path>` |
+| Report generation (`report_generation`) | `Generate report` | `tool_generate_session_report` | `Session report generated: reports/<session_id>.md` |
 | Dependency scan (`dependency_scan`) | `scan dependecy for https://github.com/moeru-ai/airi` | `tool_scan_public_repo` | `Dependency Scan` + files scanned + deps parsed + vuln deps + findings list |
-| Advisory explain (`advisory_explain`) | `Explain GHSA-4342-x723-ch2f` | `tool_get_advisory` | `Advisory: <id>` + `Severity:` + `Summary:` |
 
 ### MCP Service Health Checks
 

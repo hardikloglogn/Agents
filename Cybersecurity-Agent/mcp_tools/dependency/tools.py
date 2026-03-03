@@ -335,108 +335,28 @@ async def scan_public_github_repo(repo_url: str) -> dict:
         return _failure("repo_url must be a GitHub URL like https://github.com/org/repo")
 
     owner, repo = m.group(1), m.group(2)
+    branches = ["main", "master"]
+    paths = ["requirements.txt", "package.json", "pom.xml", "build.gradle", "pubspec.yaml"]
 
-    candidate_file_types: dict[str, str] = {
-        "requirements.txt": "requirements.txt",
-        "package.json": "package.json",
-        "pom.xml": "pom.xml",
-        "build.gradle": "build.gradle",
-        "build.gradle.kts": "build.gradle",
-        "pubspec.yaml": "pubspec.yaml",
-    }
-
-    async def _default_branch(client: httpx.AsyncClient) -> str | None:
-        try:
-            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}")
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            b = (data.get("default_branch") or "").strip()
-            return b or None
-        except Exception:
-            return None
-
-    async def _repo_tree_paths(client: httpx.AsyncClient, branch: str) -> list[str]:
-        """
-        Best-effort recursive file listing using GitHub Trees API.
-        """
-        try:
-            url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}"
-            r = await client.get(url, params={"recursive": "1"})
-            if r.status_code != 200:
-                return []
-            data = r.json()
-            tree = data.get("tree") or []
-            if not isinstance(tree, list):
-                return []
-            out: list[str] = []
-            for item in tree:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") != "blob":
-                    continue
-                p = item.get("path")
-                if isinstance(p, str) and p:
-                    out.append(p)
-            return out
-        except Exception:
-            return []
-
-    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), headers={"User-Agent": "cybersecurity-agent/dependency"}) as client:
-        default = await _default_branch(client)
-        branches = [b for b in [default, "main", "master"] if b]
-
-        # Phase 1: Fast path (root manifests on main/master).
-        found: list[dict] = []
-        for path, file_type in candidate_file_types.items():
+    found: list[dict] = []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers={"User-Agent": "cybersecurity-agent/dependency"}) as client:
+        for path in paths:
             for br in branches:
                 raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{br}/{path}"
                 try:
                     r = await client.get(raw_url)
                     if r.status_code == 200 and r.text.strip():
-                        found.append({"path": path, "branch": br, "content": r.text, "file_type": file_type})
+                        found.append({"path": path, "branch": br, "content": r.text})
                         break
                 except Exception:
                     continue
-
-        # Phase 2: Recursive discovery (pom.xml is often not at repo root).
-        if not found:
-            for br in branches:
-                all_paths = await _repo_tree_paths(client, br)
-                if not all_paths:
-                    continue
-                matches = []
-                for p in all_paths:
-                    base = p.rsplit("/", 1)[-1]
-                    if base in candidate_file_types:
-                        matches.append(p)
-
-                # Prefer root-level and first few module manifests.
-                matches.sort(key=lambda p: (p.count("/"), p))
-                matches = matches[:6]
-
-                for p in matches:
-                    base = p.rsplit("/", 1)[-1]
-                    file_type = candidate_file_types.get(base)
-                    if not file_type:
-                        continue
-                    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{br}/{p}"
-                    try:
-                        r = await client.get(raw_url)
-                        if r.status_code == 200 and r.text.strip():
-                            found.append({"path": p, "branch": br, "content": r.text, "file_type": file_type})
-                    except Exception:
-                        continue
-
-                if found:
-                    break
 
     if not found:
         return _success({"repo_url": repo_url, "files_found": 0, "results": []})
 
     results: list[dict] = []
     for f in found:
-        scan = await scan_dependencies_from_text(f["content"], f["file_type"])
+        scan = await scan_dependencies_from_text(f["content"], f["path"])
         results.append({"path": f["path"], "branch": f["branch"], "scan": scan})
 
     return _success({"repo_url": repo_url, "files_found": len(found), "results": results})

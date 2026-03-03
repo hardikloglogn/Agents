@@ -1,276 +1,130 @@
-"""
-Risk Agent Internal Graph
-=========================
-Tool-first LangGraph agent for comprehensive risk assessment.
-Pattern: agent → tools (loop) → summarize
-"""
+from __future__ import annotations
 
-import sys
-import os
-import logging
-import time
-import json
-import ast
-from typing import TypedDict, Annotated, List
-
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage
-from langchain_core.tools import BaseTool
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from shared.config import settings
-
-logger = logging.getLogger("risk-agent")
+from shared.supervisor_intents import extract_cve, extract_domain
+from agent.supervisor.mcp_client import get_mcp_tool_map
+from agent._tool_runner import ainvoke_tool
 
 
-# =========================================================
-# State
-# =========================================================
+async def run_risk_agent(message: str) -> dict:
+    """
+    Deterministic Phase-1 risk assessment pipeline:
+    CVSS -> EPSS/KEV/exploit -> exposure (ports) -> risk engine.
+    """
+    cve = extract_cve(message)
+    domain = extract_domain(message)
 
-class RiskAgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    final_output: str
+    if not cve:
+        return {"output": "Need CVE (e.g., CVE-2021-44228).", "tool_calls": [], "artifact": {"type": "risk"}}
+    if not domain:
+        return {"output": "Need domain (e.g., example.com).", "tool_calls": [], "artifact": {"type": "risk", "cve": cve}}
 
+    tool_map = await get_mcp_tool_map()
+    tool_calls: list[dict] = []
 
-# =========================================================
-# Prompts
-# =========================================================
-
-RISK_SYSTEM_PROMPT = SystemMessage(content="""
-You are a comprehensive cybersecurity risk assessment specialist.
-
-Always perform complete risk assessment using all available tools:
-
-Phase 1: Input Validation
-- Require both CVE (e.g., CVE-2021-44228) and domain (e.g., example.com)
-- If either is missing, ask the user for it
-
-Phase 2: Vulnerability Severity Assessment
-- tool_get_cvss(cve) → Get CVSS base score (0-10 scale)
-- Fallback: If CVSS unavailable, use 5.0 as default
-
-Phase 3: Exploit Likelihood Assessment
-- tool_get_epss(cve) → Get EPSS score (0-1 scale, higher = more likely exploited)
-- tool_check_cisa_kev(cve) → Check if CVE is in CISA Known Exploited Vulnerabilities
-- tool_check_exploit_available(cve) → Check if public POC/exploit is available
-
-Phase 4: Exposure Assessment
-- tool_port_scan(domain) → Scan for open ports
-- Interpretation: If ports found = internet exposed; if scan has warnings, treat as unreliable
-
-Phase 5: Overall Risk Calculation
-- tool_calculate_risk(cvss, epss, exploit_available, in_kev, internet_exposed, open_ports)
-- Fallback: If risk service fails, calculate as min(10.0, cvss) and assign severity
-
-Never invent risk scores or exposure data.
-Base assessment only on tool results.
-Always use fallbacks if services unavailable.
-""")
-
-RISK_SUMMARY_PROMPT = SystemMessage(content="""
-Provide a comprehensive risk assessment summary:
-
-Include:
-- Overall Risk Score (0-10 with severity: Critical/High/Medium/Low)
-- CVE ID and CVSS Score
-- Exploit Likelihood (EPSS%, KEV status, POC availability)
-- Internet Exposure (open ports, scan reliability)
-- Risk Severity Justification (why this score)
-- Recommended Action (Patch immediately/ASAP/soon/monitor with priority)
-- Exposure Details (which ports exposed, services at risk)
-- Confidence Level (based on data availability)
-
-Be clear about fallback values used (e.g., "CVSS defaulted to 5.0").
-Be actionable and specific.
-""")
-
-
-# =========================================================
-# Helpers
-# =========================================================
-
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _extract_tool_output(content):
+    cvss_res, tc = await ainvoke_tool(tool_map, "tool_get_cvss", {"cve": cve})
+    tool_calls.append(tc)
+    cvss_val = None
+    if cvss_res.get("status") == "success":
+        cvss_val = (cvss_res.get("data") or {}).get("cvss")
     try:
-        if isinstance(content, dict):
-            return content
-
-        if isinstance(content, list):
-            if content and "text" in content[0]:
-                text = content[0]["text"]
-                try:
-                    return json.loads(text)
-                except:
-                    return text
-
-        if isinstance(content, str):
-            try:
-                parsed = ast.literal_eval(content)
-                if isinstance(parsed, list) and parsed and "text" in parsed[0]:
-                    text = parsed[0]["text"]
-                    try:
-                        return json.loads(text)
-                    except:
-                        return text
-            except:
-                pass
-
-        return content
+        cvss = float(cvss_val) if cvss_val is not None else 5.0
     except Exception:
-        return str(content)
+        cvss = 5.0
 
+    epss_res, tc = await ainvoke_tool(tool_map, "tool_get_epss", {"cve": cve})
+    tool_calls.append(tc)
+    epss = 0.0
+    if epss_res.get("status") == "success":
+        try:
+            epss = float((epss_res.get("data") or {}).get("epss") or 0.0)
+        except Exception:
+            epss = 0.0
 
-# =========================================================
-# Agent Execution
-# =========================================================
+    kev_res, tc = await ainvoke_tool(tool_map, "tool_check_cisa_kev", {"cve": cve})
+    tool_calls.append(tc)
+    kev = False
+    if kev_res.get("status") == "success":
+        kev = bool((kev_res.get("data") or {}).get("in_kev"))
 
-async def run_risk_agent(messages: List[BaseMessage], tools: List[BaseTool]) -> dict:
-    logger.info(f"Risk agent started: {messages[:100]}")
+    exploit_res, tc = await ainvoke_tool(tool_map, "tool_check_exploit_available", {"cve": cve})
+    tool_calls.append(tc)
+    exploit = False
+    if exploit_res.get("status") == "success":
+        exploit = bool((exploit_res.get("data") or {}).get("exploit_available"))
 
-    if not tools:
-        return {
-            "output": "No risk assessment tools available.",
-            "tool_calls": []
-        }
+    port_res, tc = await ainvoke_tool(tool_map, "tool_port_scan", {"host": domain})
+    tool_calls.append(tc)
+    ports: list[int] = []
+    internet_exposed = False
+    if port_res.get("status") == "success":
+        d = port_res.get("data") or {}
+        ports = list(d.get("open_ports") or [])
+        # If the scan is flagged unreliable, treat exposure as unknown.
+        if d.get("warning"):
+            ports = []
+        internet_exposed = bool(ports)
 
-    # LLM
-    llm = ChatOpenAI(
-        model=settings.OPENAI_MODEL,
-        api_key=settings.OPENAI_API_KEY,
-        temperature=0,
-    )
-    llm_with_tools = llm.bind_tools(tools)
-
-    # =====================================================
-    # Nodes
-    # =====================================================
-
-    async def reasoning_node(state: RiskAgentState):
-        response = await llm_with_tools.ainvoke(
-            [RISK_SYSTEM_PROMPT] + state["messages"]
-        )
-
-        logger.info(f"Tool decision: {getattr(response, 'tool_calls', None)}")
-
-        return {"messages": [response]}
-
-    def should_continue(state: RiskAgentState):
-        last = state["messages"][-1]
-        if getattr(last, "tool_calls", None):
-            return "tools"
-        return "summarize"
-
-    async def summarize_node(state: RiskAgentState):
-        summary = await llm.ainvoke(
-            [RISK_SUMMARY_PROMPT] + state["messages"]
-        )
-
-        text = summary.content if isinstance(summary.content, str) else str(summary.content)
-
-        return {
-            "messages": [AIMessage(content=text)],
-            "final_output": text,
-        }
-
-    # =====================================================
-    # Graph
-    # =====================================================
-
-    graph = StateGraph(RiskAgentState)
-    tool_node = ToolNode(tools)
-
-    graph.add_node("reasoning", reasoning_node)
-    graph.add_node("tools", tool_node)
-    graph.add_node("summarize", summarize_node)
-
-    graph.add_edge(START, "reasoning")
-
-    graph.add_conditional_edges(
-        "reasoning",
-        should_continue,
+    risk_res, tc = await ainvoke_tool(
+        tool_map,
+        "tool_calculate_risk",
         {
-            "tools": "tools",
-            "summarize": "summarize",
+            "cvss": cvss,
+            "epss": epss,
+            "exploit_available": exploit,
+            "in_kev": kev,
+            "internet_exposed": internet_exposed,
+            "open_ports": ports,
+        },
+    )
+    tool_calls.append(tc)
+
+    risk_data = {}
+    if risk_res.get("status") == "success":
+        risk_data = risk_res.get("data") or {}
+    else:
+        # Fallback (deterministic) if risk service is down.
+        score = min(10.0, round(cvss, 1))
+        risk_data = {
+            "overall_score": score,
+            "severity": "Critical" if score >= 9 else "High" if score >= 7 else "Medium" if score >= 4 else "Low",
+            "recommended_priority": "Patch immediately" if score >= 9 else "Patch ASAP" if score >= 7 else "Patch soon" if score >= 4 else "Monitor / schedule fix",
         }
+
+    severity = str(risk_data.get("severity") or "Unknown").upper()
+    score = risk_data.get("overall_score", "?")
+    action = risk_data.get("recommended_priority") or "Patch"
+
+    ports_text = ", ".join(str(p) for p in ports) if ports else "(none)"
+    output = "\n".join(
+        [
+            f"Risk: {severity} ({score})",
+            "",
+            f"CVE: {cve}",
+            f"Domain: {domain}",
+            "",
+            "Reasons:",
+            f"- CVSS: {cvss}",
+            f"- EPSS: {int(round(epss * 100))}%",
+            f"- CISA KEV: {'Yes' if kev else 'No'}",
+            f"- Public exploit: {'Available' if exploit else 'Not found'}",
+            f"- Internet exposed (ports: {ports_text})" if internet_exposed else "- Internet exposed: No",
+            "",
+            "Action:",
+            f"{action}.",
+        ]
     )
 
-    # Loop for multiple tool calls
-    graph.add_edge("tools", "reasoning")
-
-    graph.add_edge("summarize", END)
-
-    compiled_graph = graph.compile()
-
-    # =====================================================
-    # Execute
-    # =====================================================
-
-    try:
-        initial_state = {"messages": messages}
-        final_state = await compiled_graph.ainvoke(initial_state)
-
-        output = final_state.get("final_output", "")
-
-        # Extract tool calls
-        tool_calls = []
-        messages = final_state["messages"]
-
-        for i, msg in enumerate(messages):
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    tool_output = ""
-                    if i + 1 < len(messages):
-                        next_msg = messages[i + 1]
-                        if hasattr(next_msg, "content"):
-                            tool_output = _extract_tool_output(next_msg.content)
-
-                    tool_calls.append({
-                        "tool_name": tc["name"],
-                        "tool_input": tc["args"],
-                        "tool_output": str(tool_output),
-                    })
-
-        return {
-            "output": output,
-            "tool_calls": tool_calls
-        }
-
-    except Exception as e:
-        logger.exception("Risk agent failed")
-        return {
-            "output": f"Execution failed: {str(e)}",
-            "tool_calls": []
-        }
-
-
-# =========================================================
-# Streaming
-# =========================================================
-
-async def run_risk_agent_stream(message: str, tools: List[BaseTool]):
-    yield {
-        "event": "agent_started",
-        "data": {"agent": "risk", "message": message},
-        "timestamp": _now_iso(),
+    artifact = {
+        "type": "risk",
+        "cve": cve,
+        "domain": domain,
+        "cvss": cvss,
+        "epss": epss,
+        "kev": kev,
+        "exploit": exploit,
+        "ports": ports,
+        "risk_score": risk_data.get("overall_score"),
+        "severity": risk_data.get("severity"),
     }
-
-    try:
-        result = await run_risk_agent([HumanMessage(content=message)], tools)
-        yield {
-            "event": "agent_completed",
-            "data": result,
-            "timestamp": _now_iso(),
-        }
-    except Exception as e:
-        yield {
-            "event": "error",
-            "data": {"error": str(e)},
-            "timestamp": _now_iso(),
-        }
+    return {"output": output, "tool_calls": tool_calls, "artifact": artifact}
 
