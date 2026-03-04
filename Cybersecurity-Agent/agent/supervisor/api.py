@@ -1,10 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
+import ast
 import json
+from agent.dependency_graph import run_dependency_agent
+from langchain_core.messages import HumanMessage
 
 from .graph import build_supervisor_graph, run_supervisor
 from .mcp_client import get_mcp_tools, get_all_mcp_tools
-from shared.models import ChatRequest, ChatResponse, generate_session_id, RedisSessionStore
+from shared.models import (
+    ChatRequest,
+    ChatResponse,
+    DependencyManifestRequest,
+    generate_session_id,
+    RedisSessionStore,
+)
+from shared.dependency_scan import canonicalize_manifest_type, supported_manifest_types
 from .report import generate_session_report_pdf
 
 
@@ -95,3 +105,67 @@ async def download_session_report(session_id: str):
         "Content-Disposition": f"attachment; filename=session_report_{session_id}.pdf"
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+MANIFEST_TYPE_HINT = ", ".join(supported_manifest_types())
+
+
+async def _run_manifest_scan(content: str, manifest_type: str) -> dict:
+    dependency_tools, _ = await get_mcp_tools()
+    if not dependency_tools:
+        raise HTTPException(status_code=503, detail="Dependency scanning tools are unavailable")
+
+    message = HumanMessage(content=f"Scan the following {manifest_type} dependency manifest for vulnerabilities:\n{content}")
+    result = await run_dependency_agent([message], dependency_tools)
+    return {
+        "summary": result.get("output", ""),
+        "scan": _parse_dependency_tool_output(result.get("tool_calls", [])),
+        "tool_calls": result.get("tool_calls", []),
+    }
+
+
+def _parse_dependency_tool_output(tool_calls: list[dict]) -> dict | None:
+    for call in tool_calls:
+        if call.get("tool_name") == "tool_scan_dependency_text":
+            raw = call.get("tool_output")
+            if raw is None:
+                return None
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                try:
+                    return ast.literal_eval(raw)
+                except Exception:
+                    return raw
+    return None
+
+
+@app.post("/dependency/manifest")
+async def scan_dependency_manifest(req: DependencyManifestRequest):
+    normalized = canonicalize_manifest_type(req.file_type, None)
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported manifest type. Supported values: {MANIFEST_TYPE_HINT}",
+        )
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="Manifest content must not be empty")
+    return await _run_manifest_scan(req.content.strip(), normalized)
+
+
+@app.post("/dependency/manifest/upload")
+async def upload_dependency_manifest(
+    file: UploadFile = File(...),
+    file_type: str | None = Form(None),
+):
+    normalized = canonicalize_manifest_type(file_type, file.filename)
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported manifest type. Supported values: {MANIFEST_TYPE_HINT}",
+        )
+    content = await file.read()
+    text = content.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return await _run_manifest_scan(text, normalized)

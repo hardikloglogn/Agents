@@ -29,6 +29,15 @@ class InvokeRequest(BaseModel):
     )
 
 
+class DependencyManifestRequest(BaseModel):
+    """Payload for submitting a dependency manifest for scanning."""
+    file_type: str | None = Field(
+        default=None,
+        description="Optional normalized manifest type (e.g., package.json, requirements.txt)",
+    )
+    content: str = Field(..., description="Raw dependency manifest text")
+
+
 # ── Outbound responses ──────────────────────────────────────────────────────
 
 class ToolCallLog(BaseModel):
