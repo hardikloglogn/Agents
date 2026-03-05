@@ -11,6 +11,7 @@ from shared.models import (
     ChatRequest,
     ChatResponse,
     DependencyManifestRequest,
+    SettingsRequest,
     generate_session_id,
     RedisSessionStore,
 )
@@ -198,3 +199,19 @@ async def upload_dependency_manifest(
     if not text:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     return await _run_manifest_scan(text, normalized, session_id)
+
+
+@app.get("/chat/settings/{session_id}")
+async def get_chat_settings(session_id: str):
+    """Retrieve session settings (OpenAI model and API key)."""
+    session_store = RedisSessionStore()
+    settings = session_store.get_session_settings(session_id)
+    return settings
+
+
+@app.post("/chat/settings/{session_id}")
+async def save_chat_settings(session_id: str, req: SettingsRequest):
+    """Save session settings (OpenAI model and API key)."""
+    session_store = RedisSessionStore()
+    session_store.save_session_settings(session_id, req.model_dump())
+    return {"status": "saved"}

@@ -172,12 +172,21 @@ def main():
         st.session_state.openai_widget_nonce = 0
     if "last_uploaded_file" not in st.session_state:
         st.session_state.last_uploaded_file = None
+    if "last_loaded_session_input" not in st.session_state:
+        st.session_state.last_loaded_session_input = None
+    if "session_input_nonce" not in st.session_state:
+        st.session_state.session_input_nonce = 0
+    if "session_history_loaded" not in st.session_state:
+        st.session_state.session_history_loaded = False
     if "openai_settings_loaded" not in st.session_state:
-        load_session_settings(st.session_state.session_id)
-        st.session_state.openai_settings_loaded = True
+        st.session_state.openai_settings_loaded = False
 
-    # Keep query params synchronized
-    st.query_params["session_id"] = st.session_state.session_id
+    # Load chat history and settings on page refresh (from URL session_id)
+    if not st.session_state.session_history_loaded:
+        load_session_settings(st.session_state.session_id)
+        load_history(st.session_state.session_id)
+        st.session_state.openai_settings_loaded = True
+        st.session_state.session_history_loaded = True
 
     # Sidebar
     sidebar_state = render_sidebar(
@@ -185,15 +194,26 @@ def main():
         st.session_state.openai_model,
         st.session_state.openai_api_key,
         widget_nonce=st.session_state.openai_widget_nonce,
+        input_nonce=st.session_state.session_input_nonce,
     )
 
-    # Sidebar Actions
-    if sidebar_state["set_session"]:
-        st.session_state.session_id = sidebar_state["session_input"]
-        load_history(sidebar_state["session_input"])
-        load_session_settings(sidebar_state["session_input"])
-        st.session_state.openai_widget_nonce += 1
-        st.rerun()
+    # Initialize tracking for session loading to prevent infinite loops
+    if "last_loaded_session_input" not in st.session_state:
+        st.session_state.last_loaded_session_input = None
+
+    # Sidebar Actions - Auto-load session when input is provided
+    if sidebar_state["load_session"] and sidebar_state["session_input"]:
+        # Only load if this is a new session input (different from last time)
+        if sidebar_state["session_input"] != st.session_state.last_loaded_session_input:
+            st.session_state.session_id = sidebar_state["session_input"]
+            st.session_state.last_loaded_session_input = sidebar_state["session_input"]
+            st.session_state.session_history_loaded = False  # Reset flag to reload on next render
+            load_history(sidebar_state["session_input"])
+            load_session_settings(sidebar_state["session_input"])
+            st.session_state.session_history_loaded = True
+            st.session_state.openai_widget_nonce += 1
+            st.session_state.session_input_nonce += 1  # Clear input field
+            st.rerun()
 
     if sidebar_state["new_session"]:
         new_session = str(uuid.uuid4())
@@ -203,6 +223,7 @@ def main():
         st.session_state.chat_history = []
         st.session_state.openai_model = current_model
         st.session_state.openai_api_key = current_api_key
+        st.session_state.session_history_loaded = True  # New session has no history to load
         st.query_params["session_id"] = new_session
         save_session_settings(new_session)
         st.session_state.openai_widget_nonce += 1

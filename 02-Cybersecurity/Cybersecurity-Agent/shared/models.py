@@ -138,10 +138,40 @@ class RedisSessionStore:
         except Exception:
             return
 
+    def get_session_settings(self, session_id: str) -> Dict[str, Any]:
+        """Retrieve settings for a session."""
+        try:
+            settings_json = self.redis.get(f"session:{session_id}:settings")
+            if settings_json:
+                return json.loads(settings_json)
+            return {}
+        except Exception:
+            return {}
+
+    def save_session_settings(self, session_id: str, session_settings: Dict[str, Any]):
+        """Save settings for a session."""
+        try:
+            self.redis.set(
+                f"session:{session_id}:settings",
+                json.dumps(session_settings),
+                ex=settings.REDIS_SESSION_TTL_SECONDS,
+            )
+        except Exception:
+            return
+
     def delete_session(self, session_id: str):
         """Delete a session and its data."""
         try:
             self.redis.delete(f"session:{session_id}:history")
             self.redis.delete(f"session:{session_id}:artifacts")
+            self.redis.delete(f"session:{session_id}:settings")
         except Exception:
             return
+
+
+# ── Settings ───────────────────────────────────────────────────────
+
+class SettingsRequest(BaseModel):
+    """Request body for saving session settings."""
+    openai_model: str = Field(..., description="OpenAI model to use")
+    openai_api_key: str = Field(..., description="OpenAI API key")

@@ -20,9 +20,10 @@ def render_sidebar(
     current_openai_model: str,
     current_openai_api_key: str,
     widget_nonce: int = 0,
+    input_nonce: int = 0,
 ) -> dict:
     state = {
-        "set_session": False,
+        "load_session": False,
         "new_session": False,
         "session_input": "",
         "quick_action": None,
@@ -44,17 +45,20 @@ def render_sidebar(
 
         st.markdown("#### &#9881; Settings", unsafe_allow_html=True)
         with st.expander("Session Controls", expanded=False):
+            session_input_key = f"session_input_{input_nonce}"
             session_input = st.text_input(
-                "Session ID",
-                value=current_session_id,
-                key="session_input",
-                placeholder="Enter existing session ID",
+                "Load Session ID",
+                value="",
+                key=session_input_key,
+                placeholder="Enter session ID to load",
             )
-            set_session = st.button("Set Session", use_container_width=True)
             new_session = st.button("New Session", use_container_width=True)
 
-            state["session_input"] = session_input
-            state["set_session"] = set_session
+            # Auto-load session when input is not empty and differs from current session
+            if session_input and session_input.strip() and session_input.strip() != current_session_id:
+                state["session_input"] = session_input.strip()
+                state["load_session"] = True
+
             state["new_session"] = new_session
 
         with st.expander("OpenAI Settings", expanded=False):
