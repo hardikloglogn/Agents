@@ -1,0 +1,17 @@
+# PropTech Realty AI — Property & Real Estate Listing Agent System
+# Install: pip install -r requirements.txt
+
+langgraph>=0.2.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+langchain-mcp-adapters>=0.1.0
+mcp>=1.0.0
+python-dotenv>=1.0.0
+psycopg2-binary>=2.9.0
+streamlit>=1.35.0
+nest-asyncio>=1.6.0
+uvicorn>=0.30.0
+httpx>=0.27.0
+psutil>=5.9.0
+redis>=5.0.0
